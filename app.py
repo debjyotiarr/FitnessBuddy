@@ -1,3 +1,4 @@
+import datetime
 import streamlit as st
 from db import (
     get_exercises,
@@ -5,7 +6,10 @@ from db import (
     start_session,
     log_set,
     get_last_session_sets,
+    get_last_same_day_session,
     get_today_sets,
+    get_recent_sessions,
+    get_session_detail,
 )
 
 st.set_page_config(
@@ -47,9 +51,30 @@ def _load_last_sets(exercise_id: int) -> None:
     st.session_state.last_exercise_id = exercise_id
 
 
+def _group_sets_by_exercise(sets: list[dict]) -> tuple[list[str], dict[str, list]]:
+    order: list[str] = []
+    grouped: dict[str, list] = {}
+    for s in sets:
+        name = s["exercises"]["name"]
+        if name not in grouped:
+            order.append(name)
+            grouped[name] = []
+        grouped[name].append(s)
+    return order, grouped
+
+
+def _render_session_sets(sets: list[dict]) -> None:
+    order, grouped = _group_sets_by_exercise(sets)
+    for name in order:
+        st.write(f"**{name}**")
+        for i, s in enumerate(grouped[name], 1):
+            rir_txt = f"  ·  RIR {s['rir']}" if s["rir"] is not None else ""
+            st.write(f" {i}. {s['weight_kg']} kg × {s['reps']}{rir_txt}")
+
+
 # ── tab layout ─────────────────────────────────────────────────────────────────
 
-tab_log, tab_exercises = st.tabs(["🏋️ Log", "📋 Exercises"])
+tab_log, tab_history, tab_exercises = st.tabs(["🏋️ Log", "📅 History", "📋 Exercises"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -75,9 +100,11 @@ with tab_log:
 
     # ── active session ────────────────────────────────────────────────────────
     else:
+        today_date = datetime.date.today().strftime("%d %b %Y")
         col_title, col_end = st.columns([4, 1])
         with col_title:
             st.subheader(f"💪 {st.session_state.day_type} Day")
+            st.caption(today_date)
         with col_end:
             if st.button("End ✓", use_container_width=True):
                 st.session_state.session_id = None
@@ -85,6 +112,15 @@ with tab_log:
                 st.session_state.last_sets_cache = []
                 st.session_state.last_set_logged = None
                 st.rerun()
+
+        # ── last same-day session summary ─────────────────────────────────────
+        prev_session, prev_sets = get_last_same_day_session(
+            st.session_state.day_type, st.session_state.session_id
+        )
+        if prev_session:
+            prev_date = prev_session.get("date", "previous session")
+            with st.expander(f"Last {st.session_state.day_type} Day — {prev_date}"):
+                _render_session_sets(prev_sets)
 
         st.divider()
 
@@ -109,7 +145,7 @@ with tab_log:
         if current_exercise_id and st.session_state.last_exercise_id != current_exercise_id:
             _load_last_sets(current_exercise_id)
 
-        # ── last session display ──────────────────────────────────────────────
+        # ── last session for this exercise ────────────────────────────────────
         if st.session_state.last_sets_cache:
             date_label = st.session_state.last_date_cache or "last session"
             lines = "\n\n".join(
@@ -188,23 +224,29 @@ with tab_log:
         today = get_today_sets(st.session_state.session_id)
         if today:
             st.subheader("Today's Log")
-            # Group preserving the order exercises were first done
-            order: list[str] = []
-            grouped: dict[str, list] = {}
-            for s in today:
-                name = s["exercises"]["name"]
-                if name not in grouped:
-                    order.append(name)
-                    grouped[name] = []
-                grouped[name].append(s)
-
-            for name in order:
-                st.write(f"**{name}**")
-                for i, s in enumerate(grouped[name], 1):
-                    rir_txt = f"  ·  RIR {s['rir']}" if s["rir"] is not None else ""
-                    st.write(f" {i}. {s['weight_kg']} kg × {s['reps']}{rir_txt}")
+            _render_session_sets(today)
         else:
             st.info("No sets logged yet — pick an exercise above and hit Add Set.")
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# HISTORY TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_history:
+    st.subheader("Session History")
+    sessions = get_recent_sessions(limit=20)
+    if not sessions:
+        st.info("No sessions logged yet.")
+    else:
+        for session in sessions:
+            set_count = len(session.get("sets", []))
+            label = f"**{session['date']}** — {session['day_type']}  ·  {set_count} sets"
+            with st.expander(label):
+                detail = get_session_detail(session["id"])
+                if detail:
+                    _render_session_sets(detail)
+                else:
+                    st.caption("No sets recorded.")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
