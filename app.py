@@ -90,6 +90,8 @@ _defaults: dict = {
     "session_id": None,
     "day_type": None,
     "session_start_ts": None,
+    "session_end_ts": None,
+    "confirm_end": False,
     "weight": 20.0,
     "reps": 10,
     "rir": 2,
@@ -151,20 +153,25 @@ def _render_session_sets(sets: list[dict]) -> None:
         )
 
 
+_HEADER_H = 88   # px — shared by banner and timer so they match exactly
+
 def _live_timer(start_ts: int) -> None:
     components.html(f"""
     <div style="
-        background: linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
-        border-radius:14px; padding:14px 10px;
-        text-align:center; color:white;
+        background:linear-gradient(135deg,#1a1a2e 0%,#16213e 100%);
+        border-radius:14px; color:white;
+        height:{_HEADER_H}px; box-sizing:border-box;
+        display:flex; flex-direction:column;
+        align-items:center; justify-content:center; gap:3px;
     ">
         <div id="tmr" style="
             font-size:28px; font-weight:800; letter-spacing:-0.5px;
             font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display',sans-serif;
+            line-height:1;
         ">0:00</div>
         <div style="
-            font-size:10px; opacity:0.6; font-weight:600;
-            text-transform:uppercase; letter-spacing:0.12em; margin-top:3px;
+            font-size:10px; opacity:0.55; font-weight:600;
+            text-transform:uppercase; letter-spacing:0.12em;
             font-family:-apple-system,sans-serif;
         ">session time</div>
     </div>
@@ -177,15 +184,85 @@ def _live_timer(start_ts: int) -> None:
     }}
     tick(); setInterval(tick,1000);
     </script>
-    """, height=90)
+    """, height=_HEADER_H)
 
 
 def _end_session() -> None:
-    st.session_state.session_id = None
+    st.session_state.session_id      = None
     st.session_state.session_start_ts = None
+    st.session_state.session_end_ts  = None
+    st.session_state.confirm_end     = False
     st.session_state.last_exercise_id = None
     st.session_state.last_sets_cache = []
     st.session_state.last_set_logged = None
+
+
+def _show_end_summary() -> None:
+    today_sets = get_today_sets(st.session_state.session_id)
+    start_ts   = st.session_state.session_start_ts or 0
+    end_ts     = st.session_state.session_end_ts   or int(datetime.datetime.now().timestamp())
+    duration   = max(0, round((end_ts - start_ts) / 60))
+    total_sets = len(today_sets)
+    total_vol  = sum(float(s["weight_kg"]) * s["reps"] for s in today_sets)
+
+    # group by exercise (preserving order)
+    order: list[str] = []
+    grouped: dict[str, list] = {}
+    for s in today_sets:
+        name = s["exercises"]["name"]
+        if name not in grouped:
+            order.append(name)
+            grouped[name] = []
+        grouped[name].append(s)
+
+    today_date = datetime.date.today().strftime("%A, %d %B %Y")
+    st.markdown(
+        f'<div style="background:linear-gradient(135deg,#2d7a2d 0%,#3aaf3a 100%);'
+        f'border-radius:16px;padding:24px 20px;color:white;text-align:center;margin-bottom:16px;">'
+        f'<div style="font-size:38px;font-weight:800;letter-spacing:-1px;line-height:1;">Done!</div>'
+        f'<div style="font-size:15px;font-weight:600;opacity:0.9;margin-top:4px;">'
+        f'{st.session_state.day_type} Day · {today_date}</div>'
+        f'<div style="display:flex;justify-content:center;gap:32px;margin-top:18px;">'
+        f'<div><div style="font-size:26px;font-weight:800;">{duration}</div>'
+        f'<div style="font-size:10px;opacity:0.65;text-transform:uppercase;letter-spacing:0.1em;margin-top:2px;">min</div></div>'
+        f'<div><div style="font-size:26px;font-weight:800;">{total_sets}</div>'
+        f'<div style="font-size:10px;opacity:0.65;text-transform:uppercase;letter-spacing:0.1em;margin-top:2px;">sets</div></div>'
+        f'<div><div style="font-size:26px;font-weight:800;">{total_vol:,.0f}</div>'
+        f'<div style="font-size:10px;opacity:0.65;text-transform:uppercase;letter-spacing:0.1em;margin-top:2px;">kg vol</div></div>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    if order:
+        st.markdown('<div class="section-label">Exercises</div>', unsafe_allow_html=True)
+        rows = ""
+        for name in order:
+            sets   = grouped[name]
+            n      = len(sets)
+            top_kg = max(float(s["weight_kg"]) for s in sets)
+            rows += (
+                f'<div style="display:flex;justify-content:space-between;align-items:center;'
+                f'padding:10px 0;border-bottom:1px solid #f0f0f0;">'
+                f'<span style="font-size:15px;font-weight:600;color:#1a1a2e;">{name}</span>'
+                f'<span style="font-size:13px;color:#777;">'
+                f'{n} set{"s" if n!=1 else ""}  ·  up to {top_kg} kg</span>'
+                f'</div>'
+            )
+        st.markdown(rows, unsafe_allow_html=True)
+    else:
+        st.info("No sets were logged in this session.")
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Resume Session", use_container_width=True):
+            st.session_state.confirm_end    = False
+            st.session_state.session_end_ts = None
+            st.rerun()
+    with col2:
+        if st.button("Done ✓", type="primary", use_container_width=True):
+            _end_session()
+            st.rerun()
 
 
 # ── side panel: history + exercises ───────────────────────────────────────────
@@ -271,15 +348,21 @@ with tab_strength:
             st.session_state.last_set_logged  = None
             st.rerun()
 
+    # ── end-session summary (confirm before clearing) ─────────────────────────
+    elif st.session_state.confirm_end:
+        _show_end_summary()
+
     # ── active session ────────────────────────────────────────────────────────
     else:
-        # ── header: banner + live timer ───────────────────────────────────────
+        # ── header: banner + live timer (same fixed height) ───────────────────
         today_date = datetime.date.today().strftime("%A, %d %B %Y")
         col_banner, col_timer = st.columns([3, 2])
         with col_banner:
             st.markdown(
                 f'<div style="background:linear-gradient(135deg,#FF4B4B 0%,#ff7b55 100%);'
-                f'border-radius:14px;padding:16px 20px;color:white;">'
+                f'border-radius:14px;padding:0 20px;color:white;'
+                f'height:{_HEADER_H}px;box-sizing:border-box;'
+                f'display:flex;flex-direction:column;justify-content:center;">'
                 f'<div style="font-size:24px;font-weight:800;letter-spacing:-0.5px;'
                 f'line-height:1.1;">{st.session_state.day_type} Day</div>'
                 f'<div style="font-size:13px;opacity:0.85;margin-top:4px;'
@@ -425,7 +508,8 @@ with tab_strength:
             # end button at the bottom
             st.markdown("<br>", unsafe_allow_html=True)
             if st.button("End Session", use_container_width=True):
-                _end_session()
+                st.session_state.confirm_end    = True
+                st.session_state.session_end_ts = int(datetime.datetime.now().timestamp())
                 st.rerun()
 
 
