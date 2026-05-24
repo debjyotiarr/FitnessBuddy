@@ -186,3 +186,40 @@ def create_routine(name: str, day_type: str | None, exercise_ids: list[int]) -> 
 def delete_routine(routine_id: int) -> None:
     _client().table("routines").delete().eq("id", routine_id).execute()
     get_routines.clear()
+
+
+# ── analytics ──────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120)
+def get_all_sets_for_analytics() -> list[dict]:
+    """Returns every set with nested exercise + session data for analytics processing."""
+    return (
+        _client()
+        .table("sets")
+        .select("*, exercises(name, muscle_group), sessions(date, day_type)")
+        .order("logged_at")
+        .execute()
+        .data
+    )
+
+
+# ── bodyweight ─────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=120)
+def get_bodyweight_history() -> list[dict]:
+    return (
+        _client()
+        .table("bodyweight")
+        .select("*")
+        .order("date")
+        .execute()
+        .data
+    )
+
+
+def log_bodyweight(weight_kg: float, date_str: str | None = None) -> None:
+    row: dict = {"weight_kg": weight_kg}
+    if date_str:
+        row["date"] = date_str
+    _client().table("bodyweight").upsert(row, on_conflict="date").execute()
+    get_bodyweight_history.clear()

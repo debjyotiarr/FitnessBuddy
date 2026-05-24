@@ -1,12 +1,16 @@
 import datetime
 import streamlit as st
 import streamlit.components.v1 as components
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 from db import (
     get_exercises, add_exercise,
     start_session, log_set, save_session_rating,
     get_last_session_sets, get_last_same_day_session,
     get_today_sets, get_recent_sessions, get_session_detail,
     get_routines, get_routine_detail, create_routine, delete_routine,
+    get_all_sets_for_analytics, get_bodyweight_history, log_bodyweight,
 )
 
 st.set_page_config(
@@ -433,7 +437,7 @@ def _show_end_summary() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 # TOP-LEVEL TABS
 # ══════════════════════════════════════════════════════════════════════════════
-tab_strength, tab_cardio = st.tabs(["Strength Training", "Cardio"])
+tab_strength, tab_analytics, tab_cardio = st.tabs(["Strength Training", "Analytics", "Cardio"])
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -677,6 +681,221 @@ with tab_strength:
                 st.session_state.confirm_end    = True
                 st.session_state.session_end_ts = int(datetime.datetime.now().timestamp())
                 st.rerun()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ANALYTICS TAB
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_analytics:
+
+    def _lbs_to_kg(w: float) -> float:
+        return w * 0.453592
+
+    def _build_analytics_df() -> pd.DataFrame | None:
+        raw = get_all_sets_for_analytics()
+        if not raw:
+            return None
+        rows = []
+        for s in raw:
+            ex   = s.get("exercises") or {}
+            sess = s.get("sessions")  or {}
+            date = sess.get("date")
+            if not date:
+                continue
+            w_raw = float(s["weight_kg"] or 0)
+            unit  = s.get("unit", "kg")
+            w_kg  = _lbs_to_kg(w_raw) if unit == "lbs" else w_raw
+            reps  = int(s["reps"] or 0)
+            rows.append({
+                "date":         pd.to_datetime(date),
+                "exercise":     ex.get("name", "Unknown"),
+                "muscle_group": ex.get("muscle_group") or "Other",
+                "weight_kg":    w_kg,
+                "reps":         reps,
+                "unit":         unit,
+                "e1rm":         w_kg * (1 + reps / 30) if reps > 0 else w_kg,
+            })
+        if not rows:
+            return None
+        return pd.DataFrame(rows)
+
+    _PLOTLY_LAYOUT = dict(
+        font_family  = "-apple-system, BlinkMacSystemFont, sans-serif",
+        paper_bgcolor= "white",
+        plot_bgcolor = "white",
+        margin       = dict(l=16, r=16, t=48, b=16),
+        xaxis        = dict(showgrid=False, linecolor="#e5e7eb"),
+        yaxis        = dict(gridcolor="#f3f4f6", linecolor="#e5e7eb"),
+        legend       = dict(orientation="h", y=-0.2),
+    )
+
+    an_prog, an_vol, an_body = st.tabs(["Progress", "Volume", "Body"])
+
+    # ── PROGRESS ──────────────────────────────────────────────────────────────
+    with an_prog:
+        df = _build_analytics_df()
+        if df is None:
+            st.info("Log some workouts first — your progress charts will appear here.")
+        else:
+            exercise_names = sorted(df["exercise"].unique().tolist())
+            sel_ex = st.selectbox("Exercise", exercise_names, key="an_exercise")
+            ex_df  = df[df["exercise"] == sel_ex].copy()
+
+            max_weight = ex_df["weight_kg"].max()
+            best_e1rm  = ex_df["e1rm"].max()
+            n_sets     = len(ex_df)
+            n_sessions = ex_df["date"].dt.date.nunique()
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Best weight",  f"{_fmt(round(max_weight, 1))} kg")
+            c2.metric("Best E1RM",    f"{_fmt(round(best_e1rm, 1))} kg")
+            c3.metric("Total sets",   n_sets)
+            c4.metric("Sessions",     n_sessions)
+
+            # E1RM over time — max per day
+            daily = (
+                ex_df.groupby(ex_df["date"].dt.date)["e1rm"]
+                .max()
+                .reset_index()
+            )
+            daily.columns = ["date", "E1RM (kg)"]
+            daily["date"] = pd.to_datetime(daily["date"])
+
+            fig = px.line(
+                daily, x="date", y="E1RM (kg)",
+                title=f"Estimated 1-Rep Max — {sel_ex}",
+                markers=True,
+                color_discrete_sequence=["#2563EB"],
+            )
+            fig.update_traces(line_width=2.5, marker_size=7)
+            fig.update_layout(**_PLOTLY_LAYOUT)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Best-weight over time (raw top set per day)
+            daily_w = (
+                ex_df.groupby(ex_df["date"].dt.date)["weight_kg"]
+                .max()
+                .reset_index()
+            )
+            daily_w.columns = ["date", "Weight (kg)"]
+            daily_w["date"] = pd.to_datetime(daily_w["date"])
+
+            fig2 = px.bar(
+                daily_w, x="date", y="Weight (kg)",
+                title=f"Top Weight Per Session — {sel_ex}",
+                color_discrete_sequence=["#93c5fd"],
+            )
+            fig2.update_layout(**_PLOTLY_LAYOUT)
+            st.plotly_chart(fig2, use_container_width=True)
+
+    # ── VOLUME ────────────────────────────────────────────────────────────────
+    with an_vol:
+        df = _build_analytics_df()
+        if df is None:
+            st.info("Log some workouts first — your volume charts will appear here.")
+        else:
+            vol_df        = df.copy()
+            vol_df["week"]= vol_df["date"].dt.to_period("W").apply(
+                lambda p: p.start_time
+            )
+            vol_df["tonnage"] = vol_df["weight_kg"] * vol_df["reps"]
+
+            # Stacked bar: weekly tonnage by muscle group
+            weekly = (
+                vol_df.groupby(["week", "muscle_group"])["tonnage"]
+                .sum()
+                .reset_index()
+            )
+            weekly.columns = ["Week", "Muscle group", "Tonnage (kg)"]
+
+            fig3 = px.bar(
+                weekly, x="Week", y="Tonnage (kg)", color="Muscle group",
+                barmode="stack",
+                title="Weekly Training Volume by Muscle Group",
+                color_discrete_sequence=px.colors.qualitative.Set2,
+            )
+            fig3.update_layout(**_PLOTLY_LAYOUT)
+            st.plotly_chart(fig3, use_container_width=True)
+
+            # Weekly sets count (simple line)
+            weekly_sets = (
+                vol_df.groupby("week")
+                .size()
+                .reset_index(name="Sets")
+            )
+            weekly_sets.columns = ["Week", "Sets"]
+
+            fig4 = px.line(
+                weekly_sets, x="Week", y="Sets",
+                title="Weekly Total Sets",
+                markers=True,
+                color_discrete_sequence=["#2563EB"],
+            )
+            fig4.update_traces(line_width=2.5, marker_size=7)
+            fig4.update_layout(**_PLOTLY_LAYOUT)
+            st.plotly_chart(fig4, use_container_width=True)
+
+    # ── BODY ──────────────────────────────────────────────────────────────────
+    with an_body:
+        bw_records = get_bodyweight_history()
+
+        # Log today
+        st.markdown('<div class="section-label">Log today\'s weight</div>',
+                    unsafe_allow_html=True)
+        today_str = datetime.date.today().isoformat()
+        existing  = next((r for r in bw_records if r["date"] == today_str), None)
+
+        with st.form("bw_form", clear_on_submit=False):
+            bw_val = st.number_input(
+                "Weight (kg)", min_value=20.0, max_value=300.0, step=0.1,
+                value=float(existing["weight_kg"]) if existing else 70.0,
+                key="bw_input",
+            )
+            if st.form_submit_button(
+                "Update" if existing else "Log weight",
+                use_container_width=True, type="primary"
+            ):
+                log_bodyweight(bw_val)
+                st.success(f"Logged {_fmt(bw_val)} kg for today.")
+                st.rerun()
+
+        if not bw_records:
+            st.caption("No bodyweight data yet — log your first entry above.")
+        else:
+            bw_df = pd.DataFrame(bw_records)
+            bw_df["date"] = pd.to_datetime(bw_df["date"])
+            bw_df["weight_kg"] = bw_df["weight_kg"].astype(float)
+
+            # Rolling 7-day average
+            bw_df = bw_df.sort_values("date")
+            bw_df["7d avg"] = bw_df["weight_kg"].rolling(7, min_periods=1).mean()
+
+            fig5 = go.Figure()
+            fig5.add_trace(go.Scatter(
+                x=bw_df["date"], y=bw_df["weight_kg"],
+                mode="markers", name="Daily",
+                marker=dict(color="#93c5fd", size=7),
+            ))
+            fig5.add_trace(go.Scatter(
+                x=bw_df["date"], y=bw_df["7d avg"].round(2),
+                mode="lines", name="7-day avg",
+                line=dict(color="#2563EB", width=2.5),
+            ))
+            fig5.update_layout(
+                title="Bodyweight Trend",
+                yaxis_title="kg",
+                **_PLOTLY_LAYOUT,
+            )
+            st.plotly_chart(fig5, use_container_width=True)
+
+            # Stats
+            latest = bw_df["weight_kg"].iloc[-1]
+            lo     = bw_df["weight_kg"].min()
+            hi     = bw_df["weight_kg"].max()
+            s1, s2, s3 = st.columns(3)
+            s1.metric("Latest",  f"{_fmt(round(latest, 1))} kg")
+            s2.metric("Lowest",  f"{_fmt(round(lo, 1))} kg")
+            s3.metric("Highest", f"{_fmt(round(hi, 1))} kg")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
