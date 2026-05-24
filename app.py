@@ -752,22 +752,18 @@ with tab_analytics:
             c3.metric("Total sets",   n_sets)
             c4.metric("Sessions",     n_sessions)
 
-            # E1RM over time — max per day
-            daily = (
-                ex_df.groupby(ex_df["date"].dt.date)["e1rm"]
-                .max()
-                .reset_index()
-            )
-            daily.columns = ["date", "E1RM (kg)"]
-            daily["date"] = pd.to_datetime(daily["date"])
+            # E1RM — all sets as individual dots, date-only on x-axis
+            plot_df = ex_df.copy()
+            plot_df["date"] = plot_df["date"].dt.date
+            plot_df = plot_df.rename(columns={"e1rm": "E1RM (kg)"})
 
-            fig = px.line(
-                daily, x="date", y="E1RM (kg)",
+            fig = px.scatter(
+                plot_df, x="date", y="E1RM (kg)",
                 title=f"Estimated 1-Rep Max — {sel_ex}",
-                markers=True,
+                labels={"date": ""},
                 color_discrete_sequence=["#2563EB"],
             )
-            fig.update_traces(line_width=2.5, marker_size=7)
+            fig.update_traces(marker_size=9, marker_opacity=0.75)
             fig.update_layout(**_PLOTLY_LAYOUT)
             st.plotly_chart(fig, use_container_width=True)
 
