@@ -30,6 +30,7 @@ def log_set(
     weight_kg: float,
     reps: int,
     rir: int,
+    unit: str = "kg",
 ) -> None:
     count = (
         _client()
@@ -49,8 +50,13 @@ def log_set(
             "weight_kg": weight_kg,
             "reps": reps,
             "rir": rir,
+            "unit": unit,
         }
     ).execute()
+
+
+def save_session_rating(session_id: int, rating: float) -> None:
+    _client().table("sessions").update({"rating": rating}).eq("id", session_id).execute()
 
 
 def get_last_session_sets(
