@@ -148,3 +148,41 @@ def get_session_detail(session_id: int) -> list[dict]:
         .execute()
         .data
     )
+
+
+# ── routines ───────────────────────────────────────────────────────────────────
+
+@st.cache_data(ttl=300)
+def get_routines() -> list[dict]:
+    return _client().table("routines").select("*").order("name").execute().data
+
+
+def get_routine_detail(routine_id: int) -> list[dict]:
+    """Returns exercises for a routine with names, ordered by order_index."""
+    return (
+        _client()
+        .table("routine_exercises")
+        .select("*, exercises(name, muscle_group)")
+        .eq("routine_id", routine_id)
+        .order("order_index")
+        .execute()
+        .data
+    )
+
+
+def create_routine(name: str, day_type: str | None, exercise_ids: list[int]) -> None:
+    result = _client().table("routines").insert(
+        {"name": name, "day_type": day_type or None}
+    ).execute()
+    routine_id = result.data[0]["id"]
+    if exercise_ids:
+        _client().table("routine_exercises").insert([
+            {"routine_id": routine_id, "exercise_id": eid, "order_index": i}
+            for i, eid in enumerate(exercise_ids)
+        ]).execute()
+    get_routines.clear()
+
+
+def delete_routine(routine_id: int) -> None:
+    _client().table("routines").delete().eq("id", routine_id).execute()
+    get_routines.clear()
