@@ -11,7 +11,9 @@ from db import (
     get_today_sets, get_recent_sessions, get_session_detail,
     get_routines, get_routine_detail, create_routine, delete_routine,
     get_all_sets_for_analytics, get_bodyweight_history, log_bodyweight,
+    update_exercise_sfr,
 )
+from sfr import score_sets, sfr_color, set_stimulus, set_fatigue
 
 st.set_page_config(
     page_title="FitnessBuddy",
@@ -233,7 +235,25 @@ def _panel_history() -> None:
         label = f"**{session['date']}** — {session['day_type']}  ·  {n} set{'s' if n!=1 else ''}{stars}"
         with st.expander(label):
             detail = get_session_detail(session["id"])
-            _render_session_sets(detail) if detail else st.caption("No sets recorded.")
+            if detail:
+                _render_session_sets(detail)
+                stim, fat, sfr = score_sets(detail)
+                _sc = sfr_color(sfr)
+                st.markdown(
+                    f'<div style="display:flex;gap:8px;margin-top:10px;">'
+                    f'<span style="font-size:11px;color:#6b7280;font-family:-apple-system,sans-serif;">'
+                    f'Stimulus <b style="color:#1e3a5f">{stim:,.0f}</b></span>'
+                    f'<span style="color:#d1d5db">·</span>'
+                    f'<span style="font-size:11px;color:#6b7280;font-family:-apple-system,sans-serif;">'
+                    f'Fatigue <b style="color:#1e3a5f">{fat:,.0f}</b></span>'
+                    f'<span style="color:#d1d5db">·</span>'
+                    f'<span style="font-size:11px;font-weight:700;color:{_sc};'
+                    f'font-family:-apple-system,sans-serif;">SFR {sfr:.2f}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+            else:
+                st.caption("No sets recorded.")
 
 
 def _panel_exercises(exercises_all: list[dict]) -> None:
@@ -246,12 +266,31 @@ def _panel_exercises(exercises_all: list[dict]) -> None:
         "".join(
             f'<div class="lib-row">'
             f'<span class="lib-name">{e["name"]}</span>'
+            f'<span style="display:flex;gap:5px;align-items:center;">'
             f'<span class="lib-tag">{e.get("muscle_group","—")} · {e.get("category","—")}</span>'
+            f'<span class="lib-tag" style="background:#f0fdf4;color:#16a34a;">SFR {float(e.get("sfr_rating") or 3):.1f}</span>'
+            f'</span>'
             f'</div>'
             for e in filtered
         ),
         unsafe_allow_html=True,
     )
+    st.divider()
+    st.markdown("**Adjust SFR rating**")
+    st.caption("Override the stimulus/fatigue multiplier for a specific exercise (1 = low SFR, 5 = high SFR, 3 = default).")
+    ex_name_to_id = {e["name"]: e["id"] for e in exercises_all}
+    with st.form("sfr_edit_form", clear_on_submit=False):
+        sfr_ex    = st.selectbox("Exercise", list(ex_name_to_id.keys()), key="sfr_edit_ex")
+        cur_sfr   = float(next((e.get("sfr_rating") or 3.0
+                                for e in exercises_all if e["name"] == sfr_ex), 3.0))
+        new_sfr   = st.select_slider(
+            "SFR rating", options=[1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0],
+            value=cur_sfr, key="sfr_edit_val",
+        )
+        if st.form_submit_button("Save", use_container_width=True):
+            update_exercise_sfr(ex_name_to_id[sfr_ex], new_sfr)
+            st.success(f"SFR for {sfr_ex} set to {new_sfr}")
+            st.rerun()
     st.divider()
     st.markdown("**Add exercise**")
     with st.form("add_exercise_form", clear_on_submit=True):
@@ -390,6 +429,30 @@ def _show_end_summary() -> None:
         f'<div><div style="font-size:26px;font-weight:800;font-family:-apple-system,sans-serif;">{total_vol:,.0f}</div>'
         f'<div style="font-size:10px;opacity:0.6;text-transform:uppercase;letter-spacing:0.1em;margin-top:2px;font-family:-apple-system,sans-serif;">kg vol</div></div>'
         f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── SFR row ──
+    stim, fat, sfr = score_sets(today_sets)
+    _sc = sfr_color(sfr)
+    st.markdown(
+        f'<div style="display:flex;gap:10px;margin:0 0 18px 0;">'
+        f'<div style="flex:1;background:#f8fafc;border-radius:12px;padding:12px 8px;text-align:center;">'
+        f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;'
+        f'color:#9ca3af;font-family:-apple-system,sans-serif;">Stimulus</div>'
+        f'<div style="font-size:20px;font-weight:800;color:#1e3a5f;'
+        f'font-family:-apple-system,sans-serif;">{stim:,.0f}</div></div>'
+        f'<div style="flex:1;background:#f8fafc;border-radius:12px;padding:12px 8px;text-align:center;">'
+        f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;'
+        f'color:#9ca3af;font-family:-apple-system,sans-serif;">Fatigue</div>'
+        f'<div style="font-size:20px;font-weight:800;color:#1e3a5f;'
+        f'font-family:-apple-system,sans-serif;">{fat:,.0f}</div></div>'
+        f'<div style="flex:1;background:#f8fafc;border-radius:12px;padding:12px 8px;text-align:center;">'
+        f'<div style="font-size:10px;text-transform:uppercase;letter-spacing:0.1em;'
+        f'color:#9ca3af;font-family:-apple-system,sans-serif;">SFR</div>'
+        f'<div style="font-size:20px;font-weight:800;color:{_sc};'
+        f'font-family:-apple-system,sans-serif;">{sfr:.2f}</div></div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -710,8 +773,11 @@ with tab_analytics:
                 "date":         pd.to_datetime(date),
                 "exercise":     ex.get("name", "Unknown"),
                 "muscle_group": ex.get("muscle_group") or "Other",
+                "category":     ex.get("category") or "compound",
+                "sfr_rating":   float(ex.get("sfr_rating") or 3.0),
                 "weight_kg":    w_kg,
                 "reps":         reps,
+                "rir":          s.get("rir"),
                 "unit":         unit,
                 "e1rm":         w_kg * (1 + reps / 30) if reps > 0 else w_kg,
             })
@@ -830,6 +896,42 @@ with tab_analytics:
             fig4.update_traces(line_width=2.5, marker_size=7)
             fig4.update_layout(**_PLOTLY_LAYOUT)
             st.plotly_chart(fig4, use_container_width=True)
+
+            # Weekly stimulus vs accumulated fatigue
+            vol_df["stimulus"] = vol_df.apply(
+                lambda r: set_stimulus(
+                    r["weight_kg"], r["reps"], r["rir"],
+                    r["category"], r["sfr_rating"]
+                ), axis=1
+            )
+            vol_df["fatigue"] = vol_df.apply(
+                lambda r: set_fatigue(
+                    r["weight_kg"], r["reps"], r["rir"],
+                    r["muscle_group"], r["category"]
+                ), axis=1
+            )
+            weekly_sf = (
+                vol_df.groupby("week")
+                .agg(Stimulus=("stimulus", "sum"), Fatigue=("fatigue", "sum"))
+                .reset_index()
+            )
+            fig5 = go.Figure()
+            fig5.add_trace(go.Scatter(
+                x=weekly_sf["week"], y=weekly_sf["Stimulus"].round(0),
+                name="Stimulus", mode="lines+markers",
+                line=dict(color="#2563EB", width=2.5), marker=dict(size=7),
+            ))
+            fig5.add_trace(go.Scatter(
+                x=weekly_sf["week"], y=weekly_sf["Fatigue"].round(0),
+                name="Fatigue", mode="lines+markers",
+                line=dict(color="#ef4444", width=2.5), marker=dict(size=7),
+            ))
+            fig5.update_layout(
+                title="Weekly Stimulus vs Fatigue",
+                yaxis_title="Score",
+                **_PLOTLY_LAYOUT,
+            )
+            st.plotly_chart(fig5, use_container_width=True)
 
     # ── BODY ──────────────────────────────────────────────────────────────────
     with an_body:

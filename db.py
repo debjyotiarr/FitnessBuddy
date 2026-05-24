@@ -95,7 +95,7 @@ def get_today_sets(session_id: int) -> list[dict]:
     return (
         _client()
         .table("sets")
-        .select("*, exercises(name)")
+        .select("*, exercises(name, muscle_group, category, sfr_rating)")
         .eq("session_id", session_id)
         .order("logged_at")
         .execute()
@@ -142,7 +142,7 @@ def get_session_detail(session_id: int) -> list[dict]:
     return (
         _client()
         .table("sets")
-        .select("*, exercises(name)")
+        .select("*, exercises(name, muscle_group, category, sfr_rating)")
         .eq("session_id", session_id)
         .order("logged_at")
         .execute()
@@ -196,11 +196,19 @@ def get_all_sets_for_analytics() -> list[dict]:
     return (
         _client()
         .table("sets")
-        .select("*, exercises(name, muscle_group), sessions(date, day_type)")
+        .select("*, exercises(name, muscle_group, category, sfr_rating), sessions(date, day_type)")
         .order("logged_at")
         .execute()
         .data
     )
+
+
+def update_exercise_sfr(exercise_id: int, sfr_rating: float) -> None:
+    _client().table("exercises").update(
+        {"sfr_rating": sfr_rating}
+    ).eq("id", exercise_id).execute()
+    get_exercises.clear()
+    get_all_sets_for_analytics.clear()
 
 
 # ── bodyweight ─────────────────────────────────────────────────────────────────
