@@ -531,12 +531,11 @@ with tab_strength:
                     label_visibility="collapsed",
                 )
 
-            st.number_input(
-                "Weight", min_value=0.0, step=0.5,
-                key="weight", label_visibility="collapsed",
-            )
+            # Reserve a visual slot for the input (appears above the buttons)
+            weight_slot = st.empty()
 
-            # increment / decrement buttons below the input
+            # Buttons execute BEFORE the widget is registered in the slot,
+            # so modifying st.session_state.weight here is safe.
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 if st.button("−5", use_container_width=True):
@@ -550,6 +549,13 @@ with tab_strength:
             with c4:
                 if st.button("+5", use_container_width=True):
                     st.session_state.weight += 5.0
+
+            # Register the input after buttons have already run
+            with weight_slot:
+                st.number_input(
+                    "Weight", min_value=0.0, step=0.5,
+                    key="weight", label_visibility="collapsed",
+                )
 
             # reps + RIR
             col_r, col_i = st.columns(2)
